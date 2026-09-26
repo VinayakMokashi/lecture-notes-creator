@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from notesmaker import sources  # noqa: E402
+from notesmaker.transcribe import fmt_ts  # noqa: E402
 
 LIVE_MODEL = "small"  # fast enough to keep up in real time on a laptop CPU
 
@@ -84,10 +85,10 @@ def guided(args):
             args.input = ask_path("Video/audio file")
         elif choice == "2":
             args.input = ask("Lecture link")
-        elif choice == "3":
-            args.input = "live"
-        elif choice == "4":
-            args.input = "mic"
+        elif choice in ("3", "4"):
+            args.input = "live" if choice == "3" else "mic"
+            if offer_resume(args):
+                return args
         else:
             args.transcript = ask_path("Transcript file (.txt, .srt, .vtt, .docx, .pdf)")
 
@@ -115,6 +116,31 @@ def guided(args):
     return args
 
 
+def offer_resume(args):
+    """If there are live lectures saved for later, offer to continue one.
+    Returns True if the user picked one (its settings are then loaded into args)."""
+    from notesmaker import session
+
+    args.resume = args.resume or False  # False = already asked
+    unfinished = session.find_unfinished(args.out)[:5]
+    if not unfinished:
+        return False
+    print("\nYou have unfinished live lectures:")
+    print("  0) Start a new lecture")
+    for i, (folder, data) in enumerate(unfinished, 1):
+        recorded = fmt_ts(session.recorded_seconds(folder))
+        when = data.get("updated", "")[:16].replace("T", " ")
+        print(f"  {i}) Continue '{data.get('name') or folder.name}' "
+              f"- {recorded} recorded, last on {when}")
+    choice = ask("Choose", "0")
+    if not choice.isdigit() or not 1 <= int(choice) <= len(unfinished):
+        return False
+    folder = unfinished[int(choice) - 1][0]
+    session.restore(args, folder)
+    args.resume = str(folder)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -125,7 +151,14 @@ def slugify(text):
 
 
 def run(args, interactive):
-    from notesmaker import transcribe
+    from notesmaker import session, transcribe
+
+    if args.input in ("live", "mic") and args.resume is None and sys.stdin.isatty():
+        offer_resume(args)
+    if args.resume:
+        if not (Path(args.resume) / session.SESSION_FILE).exists():
+            sys.exit(f"No saved live lecture found in {args.resume}")
+        session.restore(args, args.resume)
 
     whisper_model = transcribe.QUALITY_MODELS[args.quality]
     live = args.input in ("live", "mic")
@@ -144,6 +177,9 @@ def run(args, interactive):
         p = sources.clean_path(p)
         print(f"Reading course material: {Path(p).name}")
         materials.append(sources.CourseMaterial(p))
+    args.pdf = [str(m.path.resolve()) for m in materials]
+    if args.transcript:
+        args.transcript = str(Path(sources.clean_path(args.transcript)).resolve())
     glossary = sources.extract_glossary(materials)
     prompt = transcribe.build_initial_prompt(args.topic, glossary, args.accent)
 
@@ -156,8 +192,14 @@ def run(args, interactive):
         name = materials[0].path.stem
     else:
         name = args.topic or "lecture"
-    out_dir = Path(args.out) / f"{slugify(name)}_{datetime.now():%Y-%m-%d_%H%M}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume:
+        out_dir = Path(args.resume)
+        name = session.load(out_dir).get("name") or name
+        print(f"Continuing '{name}' - {fmt_ts(session.recorded_seconds(out_dir))} "
+              "recorded so far.")
+    else:
+        out_dir = Path(args.out) / f"{slugify(name)}_{datetime.now():%Y-%m-%d_%H%M}"
+        out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output folder: {out_dir}\n")
 
     transcripts = []
@@ -176,15 +218,33 @@ def run(args, interactive):
         text, language = transcribe.transcribe_file(media, whisper_model, language, prompt)
         transcripts.append(("automatic speech recognition", text))
     elif live:
-        wav = out_dir / "lecture_recording.wav"
+        session.save(out_dir, "recording", args, name)
         live_txt = out_dir / "transcript_live.txt"
-        text, language = transcribe.live_transcribe(
-            args.input, str(wav), str(live_txt), LIVE_MODEL, language, prompt
+        _, detected = transcribe.live_transcribe(
+            args.input, str(session.next_part_path(out_dir)), str(live_txt), LIVE_MODEL,
+            language, prompt, start_offset=session.recorded_seconds(out_dir),
         )
-        if args.refine and wav.exists() and wav.stat().st_size > 1000:
+        args.language = language = language or detected
+        if not lecture_finished():
+            session.save(out_dir, "paused", args, name)
+            print(f"\nSaved ({fmt_ts(session.recorded_seconds(out_dir))} recorded so far). "
+                  "To continue: run run.bat, choose option 3 (or 4), and pick this lecture.")
+            return None
+        session.save(out_dir, "finished", args, name)
+        text = live_txt.read_text(encoding="utf-8") if live_txt.exists() else ""
+        if args.refine:
             print(f"\nRe-transcribing the full recording with the more accurate '{whisper_model}' "
                   "model (use --no-refine to skip)...")
-            text, language = transcribe.transcribe_file(str(wav), whisper_model, language, prompt)
+            texts, offset = [], 0.0
+            for part in session.parts(out_dir):
+                seconds = session.wav_seconds(part)
+                if seconds >= 1:
+                    part_text, language = transcribe.transcribe_file(
+                        str(part), whisper_model, language, prompt, offset
+                    )
+                    texts.append(part_text)
+                offset += seconds
+            text = "\n".join(t for t in texts if t)
         transcripts.append(("automatic speech recognition", text))
     elif args.input:
         print(f"Transcribing {Path(args.input).name} with Whisper '{whisper_model}'...")
@@ -200,6 +260,15 @@ def run(args, interactive):
         sys.exit("No speech was captured or transcribed, so there is nothing to make notes from.")
 
     return make_notes(args, interactive, transcripts, materials, language, out_dir, name)
+
+
+def lecture_finished():
+    try:
+        answer = ask("\nIs the lecture finished?  Y = make the notes now,  "
+                     "L = save it and continue later", "Y")
+    except EOFError:
+        return True
+    return not answer.lower().startswith("l")
 
 
 def make_notes(args, interactive, transcripts, materials, language, out_dir, name):
@@ -275,6 +344,8 @@ def main():
                         help="transcription accuracy vs speed (default: balanced)")
     parser.add_argument("--no-refine", dest="refine", action="store_false",
                         help="live mode: skip the accurate second pass over the recording")
+    parser.add_argument("--resume", metavar="FOLDER",
+                        help="continue a live lecture that was saved for later")
     parser.add_argument("--render", metavar="NOTES_MD",
                         help="only re-create the PDF from an existing notes.md")
     parser.add_argument("--out", default=str(ROOT / "output"), help="output folder")
@@ -285,8 +356,8 @@ def main():
         write_outputs(md_path.read_text(encoding="utf-8"), md_path.parent, md_path.parent.name)
         return
 
-    interactive = not args.input and not args.transcript
-    if interactive or (args.input and not args.pdf and sys.stdin.isatty()):
+    interactive = not args.input and not args.transcript and not args.resume
+    if interactive or (args.input and not args.pdf and not args.resume and sys.stdin.isatty()):
         args = guided(args)
         interactive = True
     run(args, interactive)

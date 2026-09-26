@@ -78,8 +78,9 @@ def _format_segment(seg, offset=0.0):
     return line
 
 
-def transcribe_file(path, model_name, language=None, initial_prompt=None):
-    """Transcribe an audio or video file. Returns (transcript_text, detected_language)."""
+def transcribe_file(path, model_name, language=None, initial_prompt=None, offset=0.0):
+    """Transcribe an audio or video file. Returns (transcript_text, detected_language).
+    offset (seconds) is added to timestamps, for recordings made in several parts."""
     model = load_model(model_name)
     segments, info = model.transcribe(
         path,
@@ -96,7 +97,7 @@ def transcribe_file(path, model_name, language=None, initial_prompt=None):
     lines = []
     started = time.time()
     for seg in segments:
-        line = _format_segment(seg)
+        line = _format_segment(seg, offset)
         if line:
             lines.append(line)
         pct = min(seg.end / max(info.duration, 1), 1.0)
@@ -125,10 +126,39 @@ def _quietest_cut(chunk, search_seconds=5.0, window=0.3):
     return best_i
 
 
+def _listen_for_keys(stop, paused):
+    """P toggles pause, Enter stops. Uses single key presses on Windows; elsewhere the
+    user types 'p' + Enter to toggle, or just Enter to stop."""
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+    while not stop.is_set():
+        if msvcrt:
+            if not msvcrt.kbhit():
+                time.sleep(0.05)
+                continue
+            key = msvcrt.getwch()
+        else:
+            try:
+                key = input().strip() or "\r"
+            except EOFError:
+                key = "\r"
+        if key in ("\r", "\n"):
+            stop.set()
+        elif key.lower() == "p":
+            if paused.is_set():
+                paused.clear()
+            else:
+                paused.set()
+
+
 def live_transcribe(source, wav_path, transcript_path, model_name, language=None,
-                    initial_prompt=None, chunk_seconds=30):
+                    initial_prompt=None, chunk_seconds=30, start_offset=0.0):
     """Record from the speakers (loopback, i.e. whatever the browser is playing) or the
-    microphone, transcribing in chunks as the lecture goes. Stops when Enter is pressed.
+    microphone, transcribing in chunks as the lecture goes. P pauses/resumes (nothing is
+    recorded while paused, and timestamps don't advance); Enter stops.
+    start_offset continues the timestamps of an earlier sitting.
     Returns (transcript_text, detected_language)."""
     import soundcard as sc
 
@@ -178,25 +208,36 @@ def live_transcribe(source, wav_path, transcript_path, model_name, language=None
     t = threading.Thread(target=worker, daemon=True)
     t.start()
 
-    def wait_for_enter():
-        try:
-            input()
-        except EOFError:
-            pass
-        stop.set()
-
-    threading.Thread(target=wait_for_enter, daemon=True).start()
-    print("\n>>> Recording. Start (or keep) the lecture playing. Press ENTER here to stop. <<<\n")
+    paused = threading.Event()
+    threading.Thread(target=_listen_for_keys, args=(stop, paused), daemon=True).start()
+    pause_key = "P" if sys.platform == "win32" else "p + ENTER"
+    print(f"\n>>> Recording. Start (or keep) the lecture playing. <<<"
+          f"\n>>> Press {pause_key} to pause/resume for a break, ENTER to stop. <<<\n")
 
     buffer = np.zeros(0, dtype=np.float32)
-    buffer_start = 0.0
+    buffer_start = start_offset
+    was_paused = False
     with wave.open(wav_path, "wb") as wav, device.recorder(samplerate=SAMPLE_RATE, channels=1) as rec:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(SAMPLE_RATE)
         try:
             while not stop.is_set():
+                # Keep reading while paused so the audio device doesn't back up; just discard it.
                 data = rec.record(numframes=SAMPLE_RATE // 2).reshape(-1).astype(np.float32)
+                if paused.is_set():
+                    if not was_paused:
+                        was_paused = True
+                        if len(buffer):
+                            chunks.put((buffer_start, buffer))
+                            buffer_start += len(buffer) / SAMPLE_RATE
+                            buffer = np.zeros(0, dtype=np.float32)
+                        print(f"\n  || PAUSED at {fmt_ts(buffer_start)} - nothing is being recorded. "
+                              f"Press {pause_key} to resume. ||\n")
+                    continue
+                if was_paused:
+                    was_paused = False
+                    print("\n  >> RESUMED - recording again. Remember to press play. <<\n")
                 wav.writeframes((np.clip(data, -1, 1) * 32767).astype(np.int16).tobytes())
                 buffer = np.concatenate([buffer, data])
                 if len(buffer) >= chunk_seconds * SAMPLE_RATE:

@@ -37,15 +37,29 @@ Double-click **`run.bat`** and answer the questions:
 4. Topic, the lecturer's accent, and the language: all optional, but they improve accuracy
 
 The finished PDF opens automatically. Everything is saved in `output\<lecture name>_<date>\`:
-`..._notes.pdf`, `notes.md`, `transcript.txt` and, for live mode, `lecture_recording.wav`.
+`..._notes.pdf`, `notes.md`, `transcript.txt` and, for live mode, the recordings (`lecture_recording_part1.wav`, ...).
 
 **Shortcut:** drag a video file straight onto `run.bat`.
 
 ### Live lectures
 
+> **Tip:** if the lecture is a recording with a link (YouTube, a course site), use option 2
+> instead. It downloads the audio, so you don't need to keep it playing and can take breaks freely.
+> Live mode is for lectures you can't download, or ones streamed in real time.
+
 Choose option 3, wait for `>>> Recording <<<`, then play the lecture. The transcript appears as it
-goes. Press **Enter** when the lecture ends. Keep the PC's volume up: it records what the
-speakers play. Afterwards the full recording is re-transcribed with the more accurate model
+goes. Keep the PC's volume up: it records what the speakers play.
+
+| Key | What it does |
+|---|---|
+| **P** | Pause for a break (pause the video too). Nothing is recorded and the timestamps stop, so you can use the PC freely. Press **P** again to resume, then press play. |
+| **Enter** | Stop. You're asked whether the lecture is finished: **Y** writes the notes now, **L** saves it to continue later. |
+
+**Continuing another day:** run `run.bat` and choose option 3 (or 4). It lists your unfinished
+lectures; pick one and carry on. Your PDFs and settings are remembered, and the timestamps
+continue where they stopped. When you finally answer **Y**, the notes cover every sitting.
+
+When the lecture is finished, the full recording is re-transcribed with the more accurate model
 before the notes are written.
 
 ## How long it takes
@@ -69,6 +83,7 @@ run.bat --transcript "lecture.srt" --pdf "slides.pdf" --pdf "handout.pdf"
 | `--language hi` | Spoken language, if auto-detection gets it wrong |
 | `--notes-language Hindi` | Language to write the notes in (default English) |
 | `--no-refine` | Live mode: skip the second, more accurate pass |
+| `--resume output\<folder>` | Continue a live lecture saved for later (same as picking it from the menu) |
 | `--render output\...\notes.md` | Re-create the PDF after editing `notes.md` |
 
 If writing the notes fails (for example, no internet), the transcript is already saved and the
