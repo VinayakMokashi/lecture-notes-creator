@@ -1,0 +1,9 @@
+anthropic>=1.8
+faster-whisper>=1.2
+soundcard>=0.4.6
+yt-dlp
+PyMuPDF
+python-docx
+markdown-it-py
+mdit-py-plugins
+numpy
