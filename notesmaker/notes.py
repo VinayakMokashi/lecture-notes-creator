@@ -1,9 +1,17 @@
-"""Generating study notes with Claude from transcript(s) + course material."""
+"""Generating study notes with Claude from transcript(s) + course material.
+
+Two engines: Claude Code (uses the Claude subscription it's logged in with; the default)
+and the Anthropic API (needs an API key, billed per use)."""
 
 import base64
+import json
+import os
+import re
+import shutil
+import subprocess
 import sys
-
-import anthropic
+import threading
+import time
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 64000
@@ -103,8 +111,95 @@ def build_request_text(transcripts, info):
     return "\n\n".join(parts)
 
 
+def find_claude_code():
+    return shutil.which("claude")
+
+
+def _clean_notes(text):
+    """Drop any chatter before the notes' '# Title' line."""
+    match = re.search(r"^# ", text, re.M)
+    return (text[match.start():] if match else text).strip()
+
+
+def generate_notes_claude_code(transcripts, materials, info, work_dir, model="opus"):
+    """Write the notes with the Claude Code CLI, which uses the Claude subscription it is
+    logged in with (no API key or per-lecture charge). Claude reads the PDFs itself with
+    its Read tool (read-only: it can't change any files). Returns the notes as Markdown."""
+    claude = find_claude_code()
+    if not claude:
+        raise RuntimeError("Claude Code isn't installed (see https://claude.com/claude-code), "
+                           "or use --engine api.")
+
+    request = []
+    if materials:
+        request.append(
+            "Course material - read every page of these PDFs with the Read tool before writing "
+            "(for PDFs longer than 20 pages, read them in page ranges of at most 20):\n"
+            + "\n".join(f"- {m.path.resolve()} ({m.pages} pages)" for m in materials)
+        )
+    request.append(build_request_text(transcripts, info))
+    request.append("Reply with only the finished notes in Markdown, with no preamble and no "
+                   "comments about the files or your process.")
+
+    env = os.environ.copy()
+    # Make sure the subscription login is used rather than any API key, and allow this
+    # to run from inside another Claude Code session.
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
+        env.pop(key, None)
+    env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(MAX_TOKENS)
+
+    cmd = [
+        claude, "-p",
+        "--output-format", "json",
+        "--model", model,
+        "--system-prompt", SYSTEM_PROMPT,
+        "--tools", "Read",
+        "--allowedTools", "Read",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+    ]
+    for folder in sorted({str(m.path.resolve().parent) for m in materials}):
+        cmd += ["--add-dir", folder]
+
+    print(f"Writing notes with Claude Code (your Claude subscription, model: {model}). "
+          "This usually takes a few minutes...")
+    proc = subprocess.Popen(
+        cmd, cwd=work_dir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+    )
+    result = {}
+
+    def communicate():
+        result["out"], result["err"] = proc.communicate("\n\n".join(request))
+
+    worker = threading.Thread(target=communicate, daemon=True)
+    worker.start()
+    started = time.time()
+    while worker.is_alive():
+        worker.join(1)
+        sys.stdout.write(f"\r  Claude is working... {int(time.time() - started) // 60}:"
+                         f"{int(time.time() - started) % 60:02d} elapsed ")
+        sys.stdout.flush()
+    print()
+
+    out, err = result.get("out", ""), result.get("err", "")
+    try:
+        data = json.loads(out)
+    except ValueError:
+        raise RuntimeError(f"Claude Code failed: {(err or out).strip()[:800]}")
+    if data.get("is_error") or data.get("subtype") != "success":
+        raise RuntimeError(f"Claude Code reported an error: {str(data.get('result'))[:800]}")
+    notes = _clean_notes(data.get("result") or "")
+    if not notes:
+        raise RuntimeError("Claude Code returned empty notes.")
+    return notes
+
+
 def generate_notes(transcripts, materials, info):
-    """transcripts: list of (label, text). Returns the notes as Markdown."""
+    """Write the notes with the Anthropic API (billed per use to the API key).
+    transcripts: list of (label, text). Returns the notes as Markdown."""
+    import anthropic
+
     client = anthropic.Anthropic()
     content = _material_blocks(materials)
     content.append({"type": "text", "text": build_request_text(transcripts, info)})

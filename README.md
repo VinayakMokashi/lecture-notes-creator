@@ -22,10 +22,22 @@ anything that was unclear or contradictory.
 
 1. Install [Python 3.10+](https://www.python.org/downloads/) (tick "Add Python to PATH").
 2. Double-click **`setup.bat`**.
-3. Get an API key from [console.anthropic.com](https://console.anthropic.com). The first time you
-   run the tool it asks for the key and saves it in a `.env` file (never uploaded to GitHub).
+3. Install [Claude Code](https://claude.com/claude-code) and log in with your Claude Pro or Max
+   account (run `claude` once and follow the login).
+
+That's it: **no API key, no per-lecture cost**. The notes are written by Claude through your
+existing subscription (they count toward its normal usage limits). Transcription runs entirely on
+your own computer, so it is free too.
 
 You also need Microsoft Edge or Google Chrome (Edge comes with Windows); it is used to create the PDF.
+
+<details>
+<summary>Using an Anthropic API key instead (optional, billed per use)</summary>
+
+Add `--engine api` to the command. The first time, the tool asks for the key and saves it in a
+`.env` file (never uploaded to GitHub). If Claude Code isn't installed, the tool uses this
+automatically.
+</details>
 
 ## Making notes
 
@@ -84,7 +96,9 @@ run.bat --transcript "lecture.srt" --pdf "slides.pdf" --pdf "handout.pdf"
 | `--notes-language Hindi` | Language to write the notes in (default English) |
 | `--no-refine` | Live mode: skip the second, more accurate pass |
 | `--resume output\<folder>` | Continue a live lecture saved for later (same as picking it from the menu) |
+| `--engine claude-code / api` | Who writes the notes: your subscription via Claude Code (default) or an API key |
+| `--claude-model sonnet` | Model used through Claude Code (default `opus`) |
 | `--render output\...\notes.md` | Re-create the PDF after editing `notes.md` |
 
-If writing the notes fails (for example, no internet), the transcript is already saved and the
-tool prints the command to retry without transcribing again.
+If writing the notes fails (for example, no internet, or you've hit your plan's usage limit), the
+transcript is already saved and the tool prints the command to retry without transcribing again.

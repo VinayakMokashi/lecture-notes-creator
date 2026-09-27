@@ -274,7 +274,11 @@ def lecture_finished():
 def make_notes(args, interactive, transcripts, materials, language, out_dir, name):
     from notesmaker import notes
 
-    ensure_api_key(interactive)
+    engine = args.engine
+    if engine == "auto":
+        engine = "claude-code" if notes.find_claude_code() else "api"
+    if engine == "api":
+        ensure_api_key(interactive)
     info = {
         "Course / topic": args.topic,
         "Lecturer's accent": args.accent,
@@ -283,7 +287,12 @@ def make_notes(args, interactive, transcripts, materials, language, out_dir, nam
         "Course material": ", ".join(m.path.name for m in materials) if materials else None,
     }
     try:
-        md = notes.generate_notes(transcripts, materials, info)
+        if engine == "claude-code":
+            md = notes.generate_notes_claude_code(
+                transcripts, materials, info, out_dir, args.claude_model
+            )
+        else:
+            md = notes.generate_notes(transcripts, materials, info)
     except Exception as e:
         print(f"\nCould not generate the notes: {e}")
         if (out_dir / "transcript.txt").exists():
@@ -302,7 +311,10 @@ def write_outputs(md, out_dir, name):
     title = title_match.group(1).strip() if title_match else name
     md_path = out_dir / "notes.md"
     html_path = out_dir / "notes.html"
-    pdf_path = out_dir / f"{slugify(title)}_notes.pdf"
+    short = slugify(title)
+    if len(short) > 40:  # keep file paths short (Windows limits them to 260 characters)
+        short = short[:40].rsplit("_", 1)[0]
+    pdf_path = out_dir / f"{short}_notes.pdf"
     md_path.write_text(md, encoding="utf-8")
     html_path.write_text(
         render.markdown_to_html(md, title, f"Generated {datetime.now():%d %B %Y}"), encoding="utf-8"
@@ -344,6 +356,12 @@ def main():
                         help="transcription accuracy vs speed (default: balanced)")
     parser.add_argument("--no-refine", dest="refine", action="store_false",
                         help="live mode: skip the accurate second pass over the recording")
+    parser.add_argument("--engine", choices=["auto", "claude-code", "api"], default="auto",
+                        help="who writes the notes: claude-code = your Claude subscription via "
+                             "Claude Code (free with a Pro/Max plan), api = Anthropic API key "
+                             "(billed per use); auto = claude-code if installed (default)")
+    parser.add_argument("--claude-model", default="opus",
+                        help="model for the claude-code engine (default: opus)")
     parser.add_argument("--resume", metavar="FOLDER",
                         help="continue a live lecture that was saved for later")
     parser.add_argument("--render", metavar="NOTES_MD",

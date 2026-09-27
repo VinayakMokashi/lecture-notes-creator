@@ -108,29 +108,36 @@ def html_to_pdf(html_path, pdf_path):
     html_path, pdf_path = Path(html_path).resolve(), Path(pdf_path).resolve()
     if pdf_path.exists():
         pdf_path.unlink()
-    # A separate profile stops the job being handed to an already-open browser window.
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
+    # The browser works in a short temporary folder (it can't handle Windows paths over 260
+    # characters), and a separate profile stops the job being handed to an open browser window.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        shutil.copy(html_path, tmp / "notes.html")
+        tmp_pdf = tmp / "notes.pdf"
         subprocess.run(
             [
                 browser,
                 "--headless=new",
                 "--disable-gpu",
                 "--no-first-run",
-                f"--user-data-dir={profile}",
+                f"--user-data-dir={tmp / 'profile'}",
                 "--no-pdf-header-footer",
                 "--virtual-time-budget=20000",
-                f"--print-to-pdf={pdf_path}",
-                html_path.as_uri(),
+                f"--print-to-pdf={tmp_pdf}",
+                (tmp / "notes.html").as_uri(),
             ],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=180,
         )
-        deadline = time.time() + 60
-        while not pdf_path.exists() and time.time() < deadline:
+        deadline = time.time() + 90
+        while not tmp_pdf.exists() and time.time() < deadline:
             time.sleep(0.5)
-        time.sleep(1)  # let the browser finish writing and release the profile
-    if not pdf_path.exists():
-        raise RuntimeError(f"The browser did not produce a PDF. The HTML version is at {html_path}")
+        time.sleep(1)  # let the browser finish writing the file
+        if not tmp_pdf.exists():
+            raise RuntimeError(
+                f"The browser did not produce a PDF. The HTML version is at {html_path}"
+            )
+        shutil.move(str(tmp_pdf), str(pdf_path))
     return pdf_path
