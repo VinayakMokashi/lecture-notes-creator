@@ -2,6 +2,8 @@
 
 Turns a lecture and its slides/handout PDF into detailed, exam-ready study notes, saved as a PDF.
 
+**New here? Follow the step-by-step guide: [HOW_TO_USE.md](HOW_TO_USE.md)**
+
 It works with whatever you have:
 
 | You have | What it does |
